@@ -166,3 +166,9 @@ Ready for Phase 3: Replace plain shells with Claude Code instances.
   - Fixed e2e test tmux session lifecycle
   - All 78 tests passing
   - Committed: ef4755e
+- 2026-01-18 16:00 - ✅ Added hooks configuration support
+  - copyHooksConfig() reads .multiclaude/hooks.json from repo
+  - Copies to .claude/settings.json in each worktree
+  - Applied to all agent types before Claude startup
+  - Non-fatal warnings if config doesn't exist
+  - Committed: 7549680
