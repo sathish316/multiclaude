@@ -102,7 +102,18 @@ This allows testing the infrastructure independently before adding Claude comple
   - `multiclaude daemon status` - shows daemon status (repos, agents, PID)
   - `multiclaude daemon logs [-f] [-n N]` - view daemon logs
   - Internal `_run` command for foreground daemon execution
-- [ ] Implement 'multiclaude init' command
-- [ ] Implement 'multiclaude work' commands
+- [x] Implement 'multiclaude init' command
+  - Clones GitHub repository to `~/.multiclaude/repos/<name>`
+  - Creates tmux session `mc-<name>` with supervisor and merge-queue windows
+  - Registers repo and agents with daemon via socket
+  - Plain shells in tmux windows (Phase 2 approach)
+- [x] Implement 'multiclaude work' commands
+  - `multiclaude work <task>` - creates worker with worktree and tmux window
+  - `multiclaude work list` - lists workers in current/specified repo
+  - `multiclaude work rm <name>` - removes worker (worktree, tmux window, state)
+  - Auto-generates worker names, creates `work/<name>` branches
+  - Registers workers with daemon
+- [x] Implement list repos command
+  - `multiclaude list` - shows all tracked repositories
 - [ ] Implement agent message commands
-- [ ] Test end-to-end
+- [ ] Test end-to-end workflow
