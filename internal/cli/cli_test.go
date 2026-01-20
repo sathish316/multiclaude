@@ -1184,13 +1184,13 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 		paths: &config.Paths{},
 	}
 
-	t.Run("finds .multiclaude file in current directory", func(t *testing.T) {
+	t.Run("finds .mcrepo file in current directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create .multiclaude file with repo name
-		configPath := filepath.Join(tmpDir, ".multiclaude")
+		// Create .mcrepo file with repo name
+		configPath := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.WriteFile(configPath, []byte("my-repo\n"), 0644); err != nil {
-			t.Fatalf("failed to create .multiclaude file: %v", err)
+			t.Fatalf("failed to create .mcrepo file: %v", err)
 		}
 
 		if err := os.Chdir(tmpDir); err != nil {
@@ -1206,13 +1206,13 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 		}
 	})
 
-	t.Run("finds .multiclaude file in parent directory", func(t *testing.T) {
+	t.Run("finds .mcrepo file in parent directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create .multiclaude file in parent
-		configPath := filepath.Join(tmpDir, ".multiclaude")
+		// Create .mcrepo file in parent
+		configPath := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.WriteFile(configPath, []byte("parent-repo"), 0644); err != nil {
-			t.Fatalf("failed to create .multiclaude file: %v", err)
+			t.Fatalf("failed to create .mcrepo file: %v", err)
 		}
 
 		// Create and cd into a subdirectory
@@ -1233,13 +1233,13 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores .multiclaude directory", func(t *testing.T) {
+	t.Run("ignores .mcrepo directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create .multiclaude as a directory (like repos use for custom prompts)
-		configDir := filepath.Join(tmpDir, ".multiclaude")
+		// Create .mcrepo as a directory (should be ignored)
+		configDir := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.MkdirAll(configDir, 0755); err != nil {
-			t.Fatalf("failed to create .multiclaude directory: %v", err)
+			t.Fatalf("failed to create .mcrepo directory: %v", err)
 		}
 
 		if err := os.Chdir(tmpDir); err != nil {
@@ -1248,17 +1248,17 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 
 		_, err := cli.findRepoFromConfigFile()
 		if err == nil {
-			t.Error("findRepoFromConfigFile() expected error when .multiclaude is a directory")
+			t.Error("findRepoFromConfigFile() expected error when .mcrepo is a directory")
 		}
 	})
 
 	t.Run("returns error for empty file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create empty .multiclaude file
-		configPath := filepath.Join(tmpDir, ".multiclaude")
+		// Create empty .mcrepo file
+		configPath := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
-			t.Fatalf("failed to create .multiclaude file: %v", err)
+			t.Fatalf("failed to create .mcrepo file: %v", err)
 		}
 
 		if err := os.Chdir(tmpDir); err != nil {
@@ -1280,17 +1280,17 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 
 		_, err := cli.findRepoFromConfigFile()
 		if err == nil {
-			t.Error("findRepoFromConfigFile() expected error when no .multiclaude file exists")
+			t.Error("findRepoFromConfigFile() expected error when no .mcrepo file exists")
 		}
 	})
 
 	t.Run("trims whitespace from repo name", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create .multiclaude file with extra whitespace
-		configPath := filepath.Join(tmpDir, ".multiclaude")
+		// Create .mcrepo file with extra whitespace
+		configPath := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.WriteFile(configPath, []byte("  spaced-repo  \n"), 0644); err != nil {
-			t.Fatalf("failed to create .multiclaude file: %v", err)
+			t.Fatalf("failed to create .mcrepo file: %v", err)
 		}
 
 		if err := os.Chdir(tmpDir); err != nil {
@@ -1309,10 +1309,10 @@ func TestFindRepoFromConfigFile(t *testing.T) {
 	t.Run("only reads first line", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create .multiclaude file with multiple lines
-		configPath := filepath.Join(tmpDir, ".multiclaude")
+		// Create .mcrepo file with multiple lines
+		configPath := filepath.Join(tmpDir, ".mcrepo")
 		if err := os.WriteFile(configPath, []byte("first-repo\nsecond-repo\nthird-repo"), 0644); err != nil {
-			t.Fatalf("failed to create .multiclaude file: %v", err)
+			t.Fatalf("failed to create .mcrepo file: %v", err)
 		}
 
 		if err := os.Chdir(tmpDir); err != nil {
