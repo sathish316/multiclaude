@@ -2813,7 +2813,7 @@ func (c *CLI) inferRepoFromCwd() (string, error) {
 	return "", fmt.Errorf("not in a multiclaude directory")
 }
 
-// findRepoFromConfigFile looks for a .multiclaude file in the current directory
+// findRepoFromConfigFile looks for a .mcrepo file in the current directory
 // or any parent directory, and returns the repo name if found.
 // The file should contain the repo name on the first line.
 func (c *CLI) findRepoFromConfigFile() (string, error) {
@@ -2822,24 +2822,24 @@ func (c *CLI) findRepoFromConfigFile() (string, error) {
 		return "", fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	// Walk up the directory tree looking for .multiclaude file
+	// Walk up the directory tree looking for .mcrepo file
 	dir := cwd
 	for {
-		configPath := filepath.Join(dir, ".multiclaude")
+		configPath := filepath.Join(dir, ".mcrepo")
 
-		// Check if .multiclaude exists and is a file (not a directory)
+		// Check if .mcrepo exists and is a file (not a directory)
 		info, err := os.Stat(configPath)
 		if err == nil && !info.IsDir() {
 			// Read the file and get the repo name
 			content, err := os.ReadFile(configPath)
 			if err != nil {
-				return "", fmt.Errorf("failed to read .multiclaude file: %w", err)
+				return "", fmt.Errorf("failed to read .mcrepo file: %w", err)
 			}
 
 			// Get the first line and trim whitespace
 			repoName := strings.TrimSpace(strings.Split(string(content), "\n")[0])
 			if repoName == "" {
-				return "", fmt.Errorf(".multiclaude file is empty")
+				return "", fmt.Errorf(".mcrepo file is empty")
 			}
 
 			return repoName, nil
@@ -2848,18 +2848,18 @@ func (c *CLI) findRepoFromConfigFile() (string, error) {
 		// Move to parent directory
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// Reached the root, no .multiclaude file found
+			// Reached the root, no .mcrepo file found
 			break
 		}
 		dir = parent
 	}
 
-	return "", fmt.Errorf("no .multiclaude file found")
+	return "", fmt.Errorf("no .mcrepo file found")
 }
 
 // resolveRepo determines the repository to use based on:
 // 1. Explicit --repo flag (highest priority)
-// 2. .multiclaude file in current or parent directory
+// 2. .mcrepo file in current or parent directory
 // 3. Current working directory (if in a multiclaude directory)
 // 4. Current repo set via 'multiclaude repo use' (lowest priority)
 func (c *CLI) resolveRepo(flags map[string]string) (string, error) {
@@ -2868,7 +2868,7 @@ func (c *CLI) resolveRepo(flags map[string]string) (string, error) {
 		return r, nil
 	}
 
-	// 2. Try to find repo from .multiclaude config file
+	// 2. Try to find repo from .mcrepo config file
 	if repoName, err := c.findRepoFromConfigFile(); err == nil {
 		return repoName, nil
 	}
@@ -2889,7 +2889,7 @@ func (c *CLI) resolveRepo(flags map[string]string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("could not determine repository; use --repo flag, create a .multiclaude file, or run 'multiclaude repo use <name>'")
+	return "", fmt.Errorf("could not determine repository; use --repo flag, create a .mcrepo file, or run 'multiclaude repo use <name>'")
 }
 
 // inferAgentContext infers the current agent and repo from working directory
