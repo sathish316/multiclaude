@@ -1690,8 +1690,16 @@ func (d *Daemon) getClaudeBinaryPath() (string, error) {
 	return binaryPath, nil
 }
 
-// startAgent starts a Claude agent in a tmux window and registers it with state
-func (d *Daemon) startAgent(repoName string, repo *state.Repository, agentName string, agentType prompts.AgentType, workDir string) error {
+// agentStartConfig holds configuration for starting an agent
+type agentStartConfig struct {
+	agentName  string
+	agentType  state.AgentType
+	promptFile string
+	workDir    string
+}
+
+// startAgentWithConfig is the unified agent start function that handles all common logic
+func (d *Daemon) startAgentWithConfig(repoName string, repo *state.Repository, cfg agentStartConfig) error {
 	// Resolve claude binary path
 	binaryPath, err := d.getClaudeBinaryPath()
 	if err != nil {
@@ -1704,133 +1712,100 @@ func (d *Daemon) startAgent(repoName string, repo *state.Repository, agentName s
 		return fmt.Errorf("failed to generate session ID: %w", err)
 	}
 
-	// Write prompt file
+	// Copy hooks config if needed
+	repoPath := d.paths.RepoDir(repoName)
+	if err := hooks.CopyConfig(repoPath, cfg.workDir); err != nil {
+		d.logger.Warn("Failed to copy hooks config: %v", err)
+	}
+
+	// Build CLI command
+	claudeCmd := fmt.Sprintf("%s --session-id %s --dangerously-skip-permissions --append-system-prompt-file %s",
+		binaryPath, sessionID, cfg.promptFile)
+
+	// Send command to tmux window
+	target := fmt.Sprintf("%s:%s", repo.TmuxSession, cfg.agentName)
+	cmd := exec.Command("tmux", "send-keys", "-t", target, claudeCmd, "C-m")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start Claude in tmux: %w", err)
+	}
+
+	// Wait a moment for Claude to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Get PID
+	pid, err := d.tmux.GetPanePID(d.ctx, repo.TmuxSession, cfg.agentName)
+	if err != nil {
+		return fmt.Errorf("failed to get Claude PID: %w", err)
+	}
+
+	// Register agent with state
+	agent := state.Agent{
+		Type:         cfg.agentType,
+		WorktreePath: cfg.workDir,
+		TmuxWindow:   cfg.agentName,
+		SessionID:    sessionID,
+		PID:          pid,
+		CreatedAt:    time.Now(),
+	}
+
+	if err := d.state.AddAgent(repoName, cfg.agentName, agent); err != nil {
+		return fmt.Errorf("failed to register agent: %w", err)
+	}
+
+	d.logger.Info("Started and registered agent %s/%s", repoName, cfg.agentName)
+	return nil
+}
+
+// startAgent starts a Claude agent in a tmux window and registers it with state
+func (d *Daemon) startAgent(repoName string, repo *state.Repository, agentName string, agentType prompts.AgentType, workDir string) error {
 	promptFile, err := d.writePromptFile(repoName, agentType, agentName)
 	if err != nil {
 		return fmt.Errorf("failed to write prompt file: %w", err)
 	}
 
-	// Copy hooks config if needed
-	repoPath := d.paths.RepoDir(repoName)
-	if err := hooks.CopyConfig(repoPath, workDir); err != nil {
-		d.logger.Warn("Failed to copy hooks config: %v", err)
-	}
-
-	// Build CLI command
-	claudeCmd := fmt.Sprintf("%s --session-id %s --dangerously-skip-permissions --append-system-prompt-file %s",
-		binaryPath, sessionID, promptFile)
-
-	// Send command to tmux window
-	target := fmt.Sprintf("%s:%s", repo.TmuxSession, agentName)
-	cmd := exec.Command("tmux", "send-keys", "-t", target, claudeCmd, "C-m")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to start Claude in tmux: %w", err)
-	}
-
-	// Wait a moment for Claude to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Get PID
-	pid, err := d.tmux.GetPanePID(d.ctx, repo.TmuxSession, agentName)
-	if err != nil {
-		return fmt.Errorf("failed to get Claude PID: %w", err)
-	}
-
-	// Register agent with state
-	agent := state.Agent{
-		Type:         state.AgentType(agentType),
-		WorktreePath: workDir,
-		TmuxWindow:   agentName,
-		SessionID:    sessionID,
-		PID:          pid,
-		CreatedAt:    time.Now(),
-	}
-
-	if err := d.state.AddAgent(repoName, agentName, agent); err != nil {
-		return fmt.Errorf("failed to register agent: %w", err)
-	}
-
-	d.logger.Info("Started and registered agent %s/%s", repoName, agentName)
-	return nil
+	return d.startAgentWithConfig(repoName, repo, agentStartConfig{
+		agentName:  agentName,
+		agentType:  state.AgentType(agentType),
+		promptFile: promptFile,
+		workDir:    workDir,
+	})
 }
 
 // startMergeQueueAgent starts a merge-queue agent with tracking mode configuration
 func (d *Daemon) startMergeQueueAgent(repoName string, repo *state.Repository, workDir string, mqConfig state.MergeQueueConfig) error {
-	// Resolve claude binary path
-	binaryPath, err := d.getClaudeBinaryPath()
-	if err != nil {
-		return fmt.Errorf("failed to resolve claude binary: %w", err)
-	}
-
-	// Generate session ID
-	sessionID, err := claude.GenerateSessionID()
-	if err != nil {
-		return fmt.Errorf("failed to generate session ID: %w", err)
-	}
-
-	// Write prompt file with tracking mode configuration
-	promptFile, err := d.writeMergeQueuePromptFile(repoName, "merge-queue", mqConfig)
+	promptFile, err := d.writePromptFileWithPrefix(repoName, prompts.TypeMergeQueue, "merge-queue",
+		prompts.GenerateTrackingModePrompt(string(mqConfig.TrackMode)))
 	if err != nil {
 		return fmt.Errorf("failed to write prompt file: %w", err)
 	}
 
-	// Copy hooks config if needed
-	repoPath := d.paths.RepoDir(repoName)
-	if err := hooks.CopyConfig(repoPath, workDir); err != nil {
-		d.logger.Warn("Failed to copy hooks config: %v", err)
+	if err := d.startAgentWithConfig(repoName, repo, agentStartConfig{
+		agentName:  "merge-queue",
+		agentType:  state.AgentTypeMergeQueue,
+		promptFile: promptFile,
+		workDir:    workDir,
+	}); err != nil {
+		return err
 	}
 
-	// Build CLI command
-	claudeCmd := fmt.Sprintf("%s --session-id %s --dangerously-skip-permissions --append-system-prompt-file %s",
-		binaryPath, sessionID, promptFile)
-
-	// Send command to tmux window
-	target := fmt.Sprintf("%s:merge-queue", repo.TmuxSession)
-	cmd := exec.Command("tmux", "send-keys", "-t", target, claudeCmd, "C-m")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to start Claude in tmux: %w", err)
-	}
-
-	// Wait a moment for Claude to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Get PID
-	pid, err := d.tmux.GetPanePID(d.ctx, repo.TmuxSession, "merge-queue")
-	if err != nil {
-		return fmt.Errorf("failed to get Claude PID: %w", err)
-	}
-
-	// Register agent with state
-	agent := state.Agent{
-		Type:         state.AgentTypeMergeQueue,
-		WorktreePath: workDir,
-		TmuxWindow:   "merge-queue",
-		SessionID:    sessionID,
-		PID:          pid,
-		CreatedAt:    time.Now(),
-	}
-
-	if err := d.state.AddAgent(repoName, "merge-queue", agent); err != nil {
-		return fmt.Errorf("failed to register agent: %w", err)
-	}
-
-	d.logger.Info("Started and registered merge-queue agent %s/merge-queue (track mode: %s)", repoName, mqConfig.TrackMode)
+	d.logger.Info("Merge-queue agent started with track mode: %s", mqConfig.TrackMode)
 	return nil
 }
 
-// writeMergeQueuePromptFile writes a merge-queue prompt file with tracking mode configuration
-func (d *Daemon) writeMergeQueuePromptFile(repoName string, agentName string, mqConfig state.MergeQueueConfig) (string, error) {
+// writePromptFileWithPrefix writes a prompt file with an optional prefix prepended to the content
+func (d *Daemon) writePromptFileWithPrefix(repoName string, agentType prompts.AgentType, agentName, prefix string) (string, error) {
 	repoPath := d.paths.RepoDir(repoName)
 
 	// Get the base prompt (without CLI docs since we don't have them in daemon context)
-	promptText, err := prompts.GetPrompt(repoPath, prompts.TypeMergeQueue, "")
+	promptText, err := prompts.GetPrompt(repoPath, agentType, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to get prompt: %w", err)
 	}
 
-	// Add tracking mode configuration to the prompt
-	trackingConfig := prompts.GenerateTrackingModePrompt(string(mqConfig.TrackMode))
-	promptText = trackingConfig + "\n\n" + promptText
+	// Prepend prefix if provided
+	if prefix != "" {
+		promptText = prefix + "\n\n" + promptText
+	}
 
 	// Create prompt file in prompts directory
 	promptDir := filepath.Join(d.paths.Root, "prompts")
@@ -1897,26 +1872,7 @@ func (d *Daemon) restartAgent(repoName, agentName string, agent state.Agent, rep
 
 // writePromptFile writes the agent prompt to a file and returns the path
 func (d *Daemon) writePromptFile(repoName string, agentType prompts.AgentType, agentName string) (string, error) {
-	repoPath := d.paths.RepoDir(repoName)
-
-	// Get the prompt (without CLI docs since we don't have them in daemon context)
-	promptText, err := prompts.GetPrompt(repoPath, agentType, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to get prompt: %w", err)
-	}
-
-	// Create prompt file in prompts directory
-	promptDir := filepath.Join(d.paths.Root, "prompts")
-	if err := os.MkdirAll(promptDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create prompt directory: %w", err)
-	}
-
-	promptPath := filepath.Join(promptDir, fmt.Sprintf("%s.md", agentName))
-	if err := os.WriteFile(promptPath, []byte(promptText), 0644); err != nil {
-		return "", fmt.Errorf("failed to write prompt file: %w", err)
-	}
-
-	return promptPath, nil
+	return d.writePromptFileWithPrefix(repoName, agentType, agentName, "")
 }
 
 // isProcessAlive checks if a process is running
