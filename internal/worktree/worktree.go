@@ -124,11 +124,19 @@ func HasUncommittedChanges(path string) (bool, error) {
 
 // HasUnpushedCommits checks if a worktree has unpushed commits
 func HasUnpushedCommits(path string) (bool, error) {
-	// First check if there's a tracking branch
+	// First verify this is a valid git repository
+	verifyCmd := exec.Command("git", "rev-parse", "--git-dir")
+	verifyCmd.Dir = path
+	if err := verifyCmd.Run(); err != nil {
+		return false, fmt.Errorf("not a git repository: %w", err)
+	}
+
+	// Check if there's a tracking branch
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	cmd.Dir = path
 	if err := cmd.Run(); err != nil {
 		// No tracking branch, so no unpushed commits
+		// This is a valid state (branch has no upstream configured)
 		return false, nil
 	}
 
@@ -537,8 +545,29 @@ func (m *Manager) CleanupMergedBranches(branchPrefix string, deleteRemote bool) 
 	return deleted, nil
 }
 
-// CleanupOrphaned removes worktree directories that exist on disk but not in git
+// CleanupOrphanedResult contains the result of a cleanup operation
+type CleanupOrphanedResult struct {
+	Removed []string          // Successfully removed directories
+	Errors  map[string]string // Directories that failed to remove with error messages
+}
+
+// CleanupOrphaned removes worktree directories that exist on disk but not in git.
+// Returns a result containing both successfully removed paths and any errors encountered.
 func CleanupOrphaned(wtRootDir string, manager *Manager) ([]string, error) {
+	result, err := CleanupOrphanedWithDetails(wtRootDir, manager)
+	if err != nil {
+		return nil, err
+	}
+	return result.Removed, nil
+}
+
+// CleanupOrphanedWithDetails removes worktree directories that exist on disk but not in git.
+// Unlike CleanupOrphaned, this returns detailed results including any removal errors.
+func CleanupOrphanedWithDetails(wtRootDir string, manager *Manager) (*CleanupOrphanedResult, error) {
+	result := &CleanupOrphanedResult{
+		Errors: make(map[string]string),
+	}
+
 	// Get all worktrees from git
 	gitWorktrees, err := manager.List()
 	if err != nil {
@@ -560,11 +589,10 @@ func CleanupOrphaned(wtRootDir string, manager *Manager) ([]string, error) {
 	}
 
 	// Find directories in wtRootDir that aren't in git worktrees
-	var removed []string
 	entries, err := os.ReadDir(wtRootDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return removed, nil
+			return result, nil
 		}
 		return nil, err
 	}
@@ -587,13 +615,15 @@ func CleanupOrphaned(wtRootDir string, manager *Manager) ([]string, error) {
 
 		if !gitPaths[evalPath] {
 			// This is an orphaned directory
-			if err := os.RemoveAll(path); err == nil {
-				removed = append(removed, path)
+			if err := os.RemoveAll(path); err != nil {
+				result.Errors[path] = err.Error()
+			} else {
+				result.Removed = append(result.Removed, path)
 			}
 		}
 	}
 
-	return removed, nil
+	return result, nil
 }
 
 // WorktreeState represents the current state of a worktree

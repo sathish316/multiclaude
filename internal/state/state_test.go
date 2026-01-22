@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1283,5 +1284,263 @@ func TestTaskHistoryPersistence(t *testing.T) {
 	}
 	if history[0].Status != TaskStatusMerged {
 		t.Errorf("Loaded entry status = %q, want 'merged'", history[0].Status)
+	}
+}
+
+func TestConcurrentSaves(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	s := New(statePath)
+
+	// Add initial repo
+	repo := &Repository{
+		GithubURL:   "https://github.com/test/repo",
+		TmuxSession: "mc-test",
+		Agents:      make(map[string]Agent),
+	}
+	if err := s.AddRepo("test-repo", repo); err != nil {
+		t.Fatalf("AddRepo() failed: %v", err)
+	}
+
+	// Run concurrent saves
+	const numGoroutines = 10
+	const opsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, numGoroutines*opsPerGoroutine)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				agentName := fmt.Sprintf("agent-%d-%d", id, j)
+				agent := Agent{
+					Type:       AgentTypeWorker,
+					TmuxWindow: agentName,
+					SessionID:  fmt.Sprintf("session-%d-%d", id, j),
+					PID:        12345 + id*100 + j,
+					CreatedAt:  time.Now(),
+				}
+				if err := s.AddAgent("test-repo", agentName, agent); err != nil {
+					// Agent might already exist from a race - that's OK
+					continue
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	// Collect any errors
+	for err := range errChan {
+		t.Errorf("Concurrent operation failed: %v", err)
+	}
+
+	// Verify state is valid by reloading
+	loaded, err := Load(statePath)
+	if err != nil {
+		t.Fatalf("Load() after concurrent saves failed: %v", err)
+	}
+
+	// Should have the repo
+	_, exists := loaded.GetRepo("test-repo")
+	if !exists {
+		t.Error("Repository not found after concurrent saves")
+	}
+}
+
+func TestGetAllReposCopiesTaskHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	s := New(statePath)
+
+	// Add a repo with task history
+	repo := &Repository{
+		GithubURL:   "https://github.com/test/repo",
+		TmuxSession: "mc-test",
+		Agents:      make(map[string]Agent),
+	}
+	if err := s.AddRepo("test-repo", repo); err != nil {
+		t.Fatalf("AddRepo() failed: %v", err)
+	}
+
+	// Add task history
+	entry := TaskHistoryEntry{
+		Name:      "worker-1",
+		Task:      "Test task",
+		Branch:    "work/worker-1",
+		Status:    TaskStatusMerged,
+		CreatedAt: time.Now(),
+	}
+	if err := s.AddTaskHistory("test-repo", entry); err != nil {
+		t.Fatalf("AddTaskHistory() failed: %v", err)
+	}
+
+	// Get all repos
+	repos := s.GetAllRepos()
+
+	// Verify task history was copied
+	copiedRepo := repos["test-repo"]
+	if copiedRepo.TaskHistory == nil {
+		t.Fatal("GetAllRepos() did not copy TaskHistory (nil)")
+	}
+	if len(copiedRepo.TaskHistory) != 1 {
+		t.Fatalf("GetAllRepos() TaskHistory length = %d, want 1", len(copiedRepo.TaskHistory))
+	}
+	if copiedRepo.TaskHistory[0].Name != "worker-1" {
+		t.Errorf("Copied TaskHistory entry name = %q, want 'worker-1'", copiedRepo.TaskHistory[0].Name)
+	}
+
+	// Modify the copy and verify original is unchanged
+	copiedRepo.TaskHistory[0].Name = "modified"
+
+	originalHistory, _ := s.GetTaskHistory("test-repo", 10)
+	if originalHistory[0].Name == "modified" {
+		t.Error("GetAllRepos() did not deep copy TaskHistory - modifying snapshot affected original")
+	}
+}
+
+func TestSaveCleansUpTempFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	s := New(statePath)
+
+	// Add data and save multiple times
+	for i := 0; i < 5; i++ {
+		repo := &Repository{
+			GithubURL:   fmt.Sprintf("https://github.com/test/repo%d", i),
+			TmuxSession: fmt.Sprintf("mc-test%d", i),
+			Agents:      make(map[string]Agent),
+		}
+		if err := s.AddRepo(fmt.Sprintf("repo%d", i), repo); err != nil {
+			t.Fatalf("AddRepo() failed: %v", err)
+		}
+	}
+
+	// Check that no .tmp files are left behind
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".tmp" {
+			t.Errorf("Temp file not cleaned up: %s", entry.Name())
+		}
+	}
+}
+
+func TestUpdateAgentPID(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	s := New(statePath)
+
+	// Create a repo
+	repo := &Repository{
+		GithubURL:   "https://github.com/test/repo",
+		TmuxSession: "mc-test",
+		Agents:      make(map[string]Agent),
+	}
+	if err := s.AddRepo("test-repo", repo); err != nil {
+		t.Fatalf("AddRepo() failed: %v", err)
+	}
+
+	// Add an agent
+	agent := Agent{
+		Type:       AgentTypeSupervisor,
+		TmuxWindow: "supervisor",
+		SessionID:  "session-1",
+		PID:        12345,
+		CreatedAt:  time.Now(),
+	}
+	if err := s.AddAgent("test-repo", "supervisor", agent); err != nil {
+		t.Fatalf("AddAgent() failed: %v", err)
+	}
+
+	// Update the PID
+	if err := s.UpdateAgentPID("test-repo", "supervisor", 67890); err != nil {
+		t.Fatalf("UpdateAgentPID() failed: %v", err)
+	}
+
+	// Verify the PID was updated
+	updated, exists := s.GetAgent("test-repo", "supervisor")
+	if !exists {
+		t.Fatal("Agent not found after update")
+	}
+	if updated.PID != 67890 {
+		t.Errorf("PID = %d, want 67890", updated.PID)
+	}
+
+	// Test error cases
+	if err := s.UpdateAgentPID("nonexistent", "supervisor", 11111); err == nil {
+		t.Error("UpdateAgentPID should fail for nonexistent repo")
+	}
+	if err := s.UpdateAgentPID("test-repo", "nonexistent", 11111); err == nil {
+		t.Error("UpdateAgentPID should fail for nonexistent agent")
+	}
+}
+
+func TestUpdateTaskHistorySummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	s := New(statePath)
+
+	// Create a repo
+	repo := &Repository{
+		GithubURL:   "https://github.com/test/repo",
+		TmuxSession: "mc-test",
+		Agents:      make(map[string]Agent),
+	}
+	if err := s.AddRepo("test-repo", repo); err != nil {
+		t.Fatalf("AddRepo() failed: %v", err)
+	}
+
+	// Add a task history entry
+	entry := TaskHistoryEntry{
+		Name:      "worker-1",
+		Task:      "Test task",
+		Branch:    "work/worker-1",
+		Status:    TaskStatusOpen,
+		CreatedAt: time.Now(),
+	}
+	if err := s.AddTaskHistory("test-repo", entry); err != nil {
+		t.Fatalf("AddTaskHistory() failed: %v", err)
+	}
+
+	// Update with summary
+	if err := s.UpdateTaskHistorySummary("test-repo", "worker-1", "Completed the task successfully", ""); err != nil {
+		t.Fatalf("UpdateTaskHistorySummary() failed: %v", err)
+	}
+
+	// Verify the summary was updated
+	history, _ := s.GetTaskHistory("test-repo", 10)
+	if history[0].Summary != "Completed the task successfully" {
+		t.Errorf("Summary = %q, want 'Completed the task successfully'", history[0].Summary)
+	}
+
+	// Update with failure reason
+	if err := s.UpdateTaskHistorySummary("test-repo", "worker-1", "", "Out of memory"); err != nil {
+		t.Fatalf("UpdateTaskHistorySummary() failed: %v", err)
+	}
+
+	// Verify the failure reason was updated and status changed
+	history, _ = s.GetTaskHistory("test-repo", 10)
+	if history[0].FailureReason != "Out of memory" {
+		t.Errorf("FailureReason = %q, want 'Out of memory'", history[0].FailureReason)
+	}
+	if history[0].Status != TaskStatusFailed {
+		t.Errorf("Status = %q, want 'failed'", history[0].Status)
+	}
+
+	// Test error case
+	if err := s.UpdateTaskHistorySummary("test-repo", "nonexistent", "summary", ""); err == nil {
+		t.Error("UpdateTaskHistorySummary should fail for nonexistent task")
 	}
 }

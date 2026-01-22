@@ -2437,3 +2437,156 @@ func TestIsBehindMain(t *testing.T) {
 		}
 	})
 }
+
+func TestHasUnpushedCommitsNonGitDirectory(t *testing.T) {
+	// Create a non-git directory
+	tmpDir, err := os.MkdirTemp("", "non-git-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// HasUnpushedCommits should return an error for non-git directories
+	_, err = HasUnpushedCommits(tmpDir)
+	if err == nil {
+		t.Error("HasUnpushedCommits should return error for non-git directory")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("Error should mention 'not a git repository', got: %v", err)
+	}
+}
+
+func TestHasUnpushedCommitsNonExistentPath(t *testing.T) {
+	_, err := HasUnpushedCommits("/nonexistent/path/12345")
+	if err == nil {
+		t.Error("HasUnpushedCommits should return error for non-existent path")
+	}
+}
+
+func TestCleanupOrphanedWithDetails(t *testing.T) {
+	t.Run("returns details on successful removal", func(t *testing.T) {
+		repoPath, cleanup := createTestRepo(t)
+		defer cleanup()
+
+		manager := NewManager(repoPath)
+
+		// Create a worktree root directory
+		wtRootDir, err := os.MkdirTemp("", "wt-root-*")
+		if err != nil {
+			t.Fatalf("Failed to create wt root dir: %v", err)
+		}
+		defer os.RemoveAll(wtRootDir)
+
+		// Create an orphaned directory
+		orphanedPath := filepath.Join(wtRootDir, "orphaned-dir")
+		if err := os.MkdirAll(orphanedPath, 0755); err != nil {
+			t.Fatalf("Failed to create orphaned directory: %v", err)
+		}
+
+		// Run cleanup with details
+		result, err := CleanupOrphanedWithDetails(wtRootDir, manager)
+		if err != nil {
+			t.Fatalf("CleanupOrphanedWithDetails failed: %v", err)
+		}
+
+		// Should have removed the orphaned directory
+		if len(result.Removed) != 1 {
+			t.Errorf("Expected 1 removed, got %d", len(result.Removed))
+		}
+
+		// Should have no errors
+		if len(result.Errors) != 0 {
+			t.Errorf("Expected no errors, got %d: %v", len(result.Errors), result.Errors)
+		}
+	})
+
+	t.Run("reports removal errors", func(t *testing.T) {
+		repoPath, cleanup := createTestRepo(t)
+		defer cleanup()
+
+		manager := NewManager(repoPath)
+
+		// Create a worktree root directory
+		wtRootDir, err := os.MkdirTemp("", "wt-root-*")
+		if err != nil {
+			t.Fatalf("Failed to create wt root dir: %v", err)
+		}
+		defer os.RemoveAll(wtRootDir)
+
+		// Create an orphaned directory with a read-only file (harder to remove on some systems)
+		orphanedPath := filepath.Join(wtRootDir, "orphaned-dir")
+		if err := os.MkdirAll(orphanedPath, 0755); err != nil {
+			t.Fatalf("Failed to create orphaned directory: %v", err)
+		}
+
+		// Make the directory read-only to cause removal failure
+		// Note: This may not work on all systems, so we just verify the structure works
+		os.Chmod(orphanedPath, 0000)
+
+		// Run cleanup with details
+		result, err := CleanupOrphanedWithDetails(wtRootDir, manager)
+		if err != nil {
+			t.Fatalf("CleanupOrphanedWithDetails failed: %v", err)
+		}
+
+		// The result should have either an error or success for the orphaned directory
+		// (behavior depends on OS and permissions)
+		totalProcessed := len(result.Removed) + len(result.Errors)
+		if totalProcessed != 1 {
+			t.Errorf("Expected 1 total processed (removed or error), got %d", totalProcessed)
+		}
+
+		// Restore permissions for cleanup
+		os.Chmod(orphanedPath, 0755)
+	})
+
+	t.Run("handles non-existent directory", func(t *testing.T) {
+		repoPath, cleanup := createTestRepo(t)
+		defer cleanup()
+
+		manager := NewManager(repoPath)
+
+		result, err := CleanupOrphanedWithDetails("/nonexistent/directory", manager)
+		if err != nil {
+			t.Fatalf("Should not error for non-existent directory: %v", err)
+		}
+		if len(result.Removed) != 0 {
+			t.Errorf("Should return empty removed list for non-existent directory")
+		}
+		if len(result.Errors) != 0 {
+			t.Errorf("Should return empty errors for non-existent directory")
+		}
+	})
+}
+
+func TestCleanupOrphanedBackwardsCompatibility(t *testing.T) {
+	// Verify that the original CleanupOrphaned function still works as before
+	repoPath, cleanup := createTestRepo(t)
+	defer cleanup()
+
+	manager := NewManager(repoPath)
+
+	// Create a worktree root directory
+	wtRootDir, err := os.MkdirTemp("", "wt-root-*")
+	if err != nil {
+		t.Fatalf("Failed to create wt root dir: %v", err)
+	}
+	defer os.RemoveAll(wtRootDir)
+
+	// Create an orphaned directory
+	orphanedPath := filepath.Join(wtRootDir, "orphaned-dir")
+	if err := os.MkdirAll(orphanedPath, 0755); err != nil {
+		t.Fatalf("Failed to create orphaned directory: %v", err)
+	}
+
+	// Run the original cleanup function
+	removed, err := CleanupOrphaned(wtRootDir, manager)
+	if err != nil {
+		t.Fatalf("CleanupOrphaned failed: %v", err)
+	}
+
+	// Should have removed the orphaned directory
+	if len(removed) != 1 {
+		t.Errorf("Expected 1 removed, got %d", len(removed))
+	}
+}

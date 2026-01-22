@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -155,13 +156,32 @@ func (s *State) Save() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	// Write to temp file first, then rename for atomicity
-	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
+	// Use a unique temp file to avoid races between concurrent saves.
+	// CreateTemp creates a file with a unique name in the same directory.
+	dir := filepath.Dir(s.path)
+	tmpFile, err := os.CreateTemp(dir, ".state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Write data and close the file
+	_, writeErr := tmpFile.Write(data)
+	closeErr := tmpFile.Close()
+
+	// Check for write or close errors
+	if writeErr != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
+		return fmt.Errorf("failed to write state file: %w", writeErr)
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
+		return fmt.Errorf("failed to close temp file: %w", closeErr)
 	}
 
+	// Atomic rename
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
@@ -280,6 +300,11 @@ func (s *State) GetAllRepos() map[string]*Repository {
 		// Copy agents
 		for agentName, agent := range repo.Agents {
 			repoCopy.Agents[agentName] = agent
+		}
+		// Copy task history
+		if repo.TaskHistory != nil {
+			repoCopy.TaskHistory = make([]TaskHistoryEntry, len(repo.TaskHistory))
+			copy(repoCopy.TaskHistory, repo.TaskHistory)
 		}
 		repos[name] = repoCopy
 	}
@@ -523,12 +548,32 @@ func (s *State) saveUnlocked() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
+	// Use a unique temp file to avoid races between concurrent saves.
+	// CreateTemp creates a file with a unique name in the same directory.
+	dir := filepath.Dir(s.path)
+	tmpFile, err := os.CreateTemp(dir, ".state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	// Write data and close the file
+	_, writeErr := tmpFile.Write(data)
+	closeErr := tmpFile.Close()
+
+	// Check for write or close errors
+	if writeErr != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
+		return fmt.Errorf("failed to write state file: %w", writeErr)
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
+		return fmt.Errorf("failed to close temp file: %w", closeErr)
 	}
 
+	// Atomic rename
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath) // Clean up temp file on error
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
