@@ -17,6 +17,26 @@ import (
 	"github.com/dlorenc/multiclaude/pkg/tmux"
 )
 
+// skipIfTmuxCantCreateSessions skips the test if tmux cannot create sessions.
+// This is more robust than IsTmuxAvailable() which only checks if the binary exists.
+// In CI environments without a proper terminal, tmux may be installed but unable
+// to create sessions.
+func skipIfTmuxCantCreateSessions(t *testing.T, tmuxClient *tmux.Client) {
+	t.Helper()
+
+	if !tmuxClient.IsTmuxAvailable() {
+		t.Skip("tmux not available")
+	}
+
+	// Try to actually create and destroy a session to verify it works
+	testSession := "mc-test-can-create-session"
+	ctx := context.Background()
+	if err := tmuxClient.CreateSession(ctx, testSession, true); err != nil {
+		t.Skipf("tmux cannot create sessions in this environment: %v", err)
+	}
+	tmuxClient.KillSession(ctx, testSession)
+}
+
 func setupTestDaemon(t *testing.T) (*Daemon, func()) {
 	t.Helper()
 
@@ -974,9 +994,7 @@ func TestWorkspaceAgentExcludedFromWakeLoop(t *testing.T) {
 
 func TestHealthCheckLoopWithRealTmux(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1038,9 +1056,7 @@ func TestHealthCheckLoopWithRealTmux(t *testing.T) {
 
 func TestHealthCheckCleansUpMarkedAgents(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1101,9 +1117,7 @@ func TestHealthCheckCleansUpMarkedAgents(t *testing.T) {
 
 func TestMessageRoutingWithRealTmux(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1180,9 +1194,7 @@ func TestMessageRoutingWithRealTmux(t *testing.T) {
 
 func TestWakeLoopUpdatesNudgeTime(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1239,9 +1251,7 @@ func TestWakeLoopUpdatesNudgeTime(t *testing.T) {
 
 func TestWakeLoopSkipsRecentlyNudgedAgents(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1887,9 +1897,7 @@ func TestRestoreTrackedReposNoRepos(t *testing.T) {
 
 func TestRestoreTrackedReposExistingSession(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1946,9 +1954,7 @@ func TestRestoreRepoAgentsMissingRepoPath(t *testing.T) {
 
 func TestRestoreDeadAgentsWithExistingSession(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
@@ -1997,18 +2003,15 @@ func TestRestoreDeadAgentsWithExistingSession(t *testing.T) {
 
 func TestRestoreDeadAgentsSkipsAliveProcesses(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
 
 	// Create a tmux session
-	// Note: In CI environments, tmux may be installed but unable to create sessions (no TTY)
 	sessionName := "mc-test-restore-alive"
 	if err := tmuxClient.CreateSession(context.Background(), sessionName, true); err != nil {
-		t.Skipf("tmux cannot create sessions in this environment: %v", err)
+		t.Fatalf("Failed to create tmux session: %v", err)
 	}
 	defer tmuxClient.KillSession(context.Background(), sessionName)
 
@@ -2053,18 +2056,15 @@ func TestRestoreDeadAgentsSkipsAliveProcesses(t *testing.T) {
 
 func TestRestoreDeadAgentsSkipsTransientAgents(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
 
 	// Create a tmux session
-	// Note: In CI environments, tmux may be installed but unable to create sessions (no TTY)
 	sessionName := "mc-test-restore-transient"
 	if err := tmuxClient.CreateSession(context.Background(), sessionName, true); err != nil {
-		t.Skipf("tmux cannot create sessions in this environment: %v", err)
+		t.Fatalf("Failed to create tmux session: %v", err)
 	}
 	defer tmuxClient.KillSession(context.Background(), sessionName)
 
@@ -2107,18 +2107,15 @@ func TestRestoreDeadAgentsSkipsTransientAgents(t *testing.T) {
 
 func TestRestoreDeadAgentsIncludesWorkspace(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
 
 	// Create a tmux session
-	// Note: In CI environments, tmux may be installed but unable to create sessions (no TTY)
 	sessionName := "mc-test-restore-workspace"
 	if err := tmuxClient.CreateSession(context.Background(), sessionName, true); err != nil {
-		t.Skipf("tmux cannot create sessions in this environment: %v", err)
+		t.Fatalf("Failed to create tmux session: %v", err)
 	}
 	defer tmuxClient.KillSession(context.Background(), sessionName)
 
@@ -2380,9 +2377,7 @@ func TestHandleListReposRichFormat(t *testing.T) {
 
 func TestHealthCheckAttemptsRestorationBeforeCleanup(t *testing.T) {
 	tmuxClient := tmux.NewClient()
-	if !tmuxClient.IsTmuxAvailable() {
-		t.Skip("tmux not available")
-	}
+	skipIfTmuxCantCreateSessions(t, tmuxClient)
 
 	d, cleanup := setupTestDaemon(t)
 	defer cleanup()
