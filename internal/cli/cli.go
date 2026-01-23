@@ -424,7 +424,7 @@ func (c *CLI) registerCommands() {
 	workCmd := &Command{
 		Name:        "work",
 		Description: "Manage worker agents",
-		Usage:       "multiclaude work [<task>] [--repo <repo>] [--branch <branch>] [--push-to <branch>]",
+		Usage:       "multiclaude work [<task>] [--repo <repo>] [--branch <branch>] [--push-to <branch>] [--stack] [--stack-on <pr-id>]",
 		Subcommands: make(map[string]*Command),
 	}
 
@@ -1731,6 +1731,21 @@ func (c *CLI) createWorker(args []string) error {
 		}
 	}
 
+	// Check for --stack and --stack-on flags (for stacked PRs)
+	hasStack := flags["stack"] == "true"
+	stackOn, hasStackOn := flags["stack-on"]
+	isStacking := hasStack || hasStackOn
+
+	var basePR string
+	var baseBranch string
+
+	if isStacking {
+		// Validate: cannot use --stack/--stack-on with --push-to
+		if hasPushTo {
+			return errors.InvalidUsage("cannot use --stack/--stack-on with --push-to")
+		}
+	}
+
 	// Get repository path
 	repoPath := c.paths.RepoDir(repoName)
 
@@ -1747,24 +1762,62 @@ func (c *CLI) createWorker(args []string) error {
 		fmt.Printf("Warning: failed to fetch from origin: %v (continuing with local refs)\n", err)
 	}
 
+	// Resolve stacking base PR if needed
+	if isStacking {
+		if hasStackOn {
+			// Explicit PR to stack on
+			basePR = stackOn
+			// Fetch base PR's branch
+			baseBranch, err = c.fetchBasePRBranch(repoPath, basePR)
+			if err != nil {
+				return errors.Wrap(errors.CategoryRuntime, fmt.Sprintf("failed to fetch PR #%s branch", basePR), err)
+			}
+			fmt.Printf("Stacking on PR #%s (branch: %s)\n", basePR, baseBranch)
+		} else {
+			// Find highest open PR number
+			basePR, err = c.findHighestOpenPR(repoPath)
+			if err != nil {
+				return errors.Wrap(errors.CategoryRuntime, "failed to find highest open PR", err)
+			}
+			if basePR == "" {
+				// No open PRs - fall back to main branch
+				fmt.Println("No open PRs found, stacking on main branch")
+				isStacking = false // Treat as normal PR on main
+			} else {
+				// Fetch base PR's branch
+				baseBranch, err = c.fetchBasePRBranch(repoPath, basePR)
+				if err != nil {
+					return errors.Wrap(errors.CategoryRuntime, fmt.Sprintf("failed to fetch PR #%s branch", basePR), err)
+				}
+				fmt.Printf("Stacking on PR #%s (branch: %s)\n", basePR, baseBranch)
+			}
+		}
+	}
+
 	// Determine branch to start from
 	// Prefer origin/main if it exists (updated by fetch), otherwise fall back to HEAD
 	// This handles both normal repos and test repos without remotes
 	startBranch := "HEAD"
-	checkOriginCmd := exec.Command("git", "rev-parse", "--verify", "origin/main")
-	checkOriginCmd.Dir = repoPath
-	if err := checkOriginCmd.Run(); err == nil {
-		startBranch = "origin/main"
-	}
-	if branch, ok := flags["branch"]; ok {
-		startBranch = branch
-		if hasPushTo {
-			fmt.Printf("Creating worker '%s' in repo '%s' to iterate on branch '%s'\n", workerName, repoName, pushTo)
-		} else {
-			fmt.Printf("Creating worker '%s' in repo '%s' from branch '%s'\n", workerName, repoName, branch)
-		}
+	if isStacking {
+		// For stacked PRs, start from the base PR's branch
+		startBranch = baseBranch
+		fmt.Printf("Creating worker '%s' in repo '%s' (stacking on PR #%s)\n", workerName, repoName, basePR)
 	} else {
-		fmt.Printf("Creating worker '%s' in repo '%s'\n", workerName, repoName)
+		checkOriginCmd := exec.Command("git", "rev-parse", "--verify", "origin/main")
+		checkOriginCmd.Dir = repoPath
+		if err := checkOriginCmd.Run(); err == nil {
+			startBranch = "origin/main"
+		}
+		if branch, ok := flags["branch"]; ok {
+			startBranch = branch
+			if hasPushTo {
+				fmt.Printf("Creating worker '%s' in repo '%s' to iterate on branch '%s'\n", workerName, repoName, pushTo)
+			} else {
+				fmt.Printf("Creating worker '%s' in repo '%s' from branch '%s'\n", workerName, repoName, branch)
+			}
+		} else {
+			fmt.Printf("Creating worker '%s' in repo '%s'\n", workerName, repoName)
+		}
 	}
 	fmt.Printf("Task: %s\n", task)
 
@@ -1836,10 +1889,15 @@ func (c *CLI) createWorker(args []string) error {
 		return fmt.Errorf("failed to generate worker session ID: %w", err)
 	}
 
-	// Write prompt file for worker (with push-to config if specified)
+	// Write prompt file for worker (with push-to or stacking config if specified)
 	workerConfig := WorkerConfig{}
 	if hasPushTo {
 		workerConfig.PushToBranch = pushTo
+	} else if isStacking {
+		workerConfig.StackingConfig = &StackingConfig{
+			BasePR:     basePR,
+			BaseBranch: baseBranch,
+		}
 	}
 	workerPromptFile, err := c.writeWorkerPromptFile(repoPath, workerName, workerConfig)
 	if err != nil {
@@ -1907,6 +1965,70 @@ func (c *CLI) createWorker(args []string) error {
 	fmt.Printf("Or use: multiclaude attach %s\n", workerName)
 
 	return nil
+}
+
+// findHighestOpenPR finds the highest numbered open PR in the repository.
+// It uses gh CLI to list all open PRs and returns the maximum PR number.
+func (c *CLI) findHighestOpenPR(repoPath string) (string, error) {
+	cmd := exec.Command("gh", "pr", "list",
+		"--state", "open",
+		"--json", "number",
+		"--jq", ".[].number | max")
+	cmd.Dir = repoPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to list PRs: %w", err)
+	}
+
+	prNumber := strings.TrimSpace(string(output))
+	if prNumber == "" || prNumber == "null" {
+		return "", nil
+	}
+
+	return prNumber, nil
+}
+
+// fetchBasePRBranch fetches the branch name for a given PR number and ensures
+// it's available locally. Returns the remote branch ref (e.g., "origin/work/base-worker").
+func (c *CLI) fetchBasePRBranch(repoPath string, prNumber string) (string, error) {
+	// Get the head branch name from PR
+	cmd := exec.Command("gh", "pr", "view", prNumber,
+		"--json", "headRefName,state",
+		"--jq", ".headRefName,.state")
+	cmd.Dir = repoPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get PR branch: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return "", fmt.Errorf("PR #%s has incomplete data", prNumber)
+	}
+
+	branchName := lines[0]
+	prState := lines[1]
+
+	if branchName == "" {
+		return "", fmt.Errorf("PR #%s has no head branch", prNumber)
+	}
+
+	// Check if PR is already merged
+	if prState == "MERGED" {
+		return "", fmt.Errorf("PR #%s is already merged - cannot stack on merged PRs", prNumber)
+	}
+
+	// Fetch the branch from origin
+	fetchCmd := exec.Command("git", "fetch", "origin", branchName)
+	fetchCmd.Dir = repoPath
+	if err := fetchCmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to fetch branch %s: %w", branchName, err)
+	}
+
+	// Return the remote ref
+	return fmt.Sprintf("origin/%s", branchName), nil
 }
 
 func (c *CLI) listWorkers(args []string) error {
@@ -5064,7 +5186,14 @@ func (c *CLI) writeMergeQueuePromptFile(repoPath string, agentName string, mqCon
 
 // WorkerConfig holds configuration for creating worker prompts
 type WorkerConfig struct {
-	PushToBranch string // Branch to push to instead of creating a new PR (for iterating on existing PRs)
+	PushToBranch   string          // Branch to push to instead of creating a new PR (for iterating on existing PRs)
+	StackingConfig *StackingConfig // Configuration for stacked PRs
+}
+
+// StackingConfig holds configuration for creating stacked PRs
+type StackingConfig struct {
+	BasePR     string // PR number to stack on
+	BaseBranch string // Branch name of base PR
 }
 
 // writeWorkerPromptFile writes a worker prompt file with optional configuration.
@@ -5099,6 +5228,45 @@ Do NOT create a new PR. The existing PR will be updated automatically when you p
 
 `, config.PushToBranch, config.PushToBranch)
 		promptText = pushToConfig + promptText
+	}
+
+	// Add stacking configuration if specified
+	if config.StackingConfig != nil {
+		stackConfig := fmt.Sprintf(`## Stacked PR Mode
+
+**IMPORTANT: You are creating a stacked PR that depends on PR #%s**
+
+This PR should build on top of PR #%s. Your branch starts from: %s
+
+When creating your PR:
+1. Create the PR with the correct base branch:
+   gh pr create --base %s --label stacked --label multiclaude --title "Your PR Title" --body "Your PR description"
+
+2. The base branch MUST be set to: %s
+   (This is the branch from PR #%s, not main)
+
+3. Include both labels: 'stacked' and 'multiclaude'
+
+4. In your PR description, reference the base PR: "Stacks on #%s"
+
+Example command:
+   gh pr create --base %s --label stacked --label multiclaude \
+     --title "Add feature X" \
+     --body "This PR adds feature X.
+
+Stacks on #%s"
+
+After creating your PR:
+- Signal completion with: multiclaude agent complete
+- Your PR will only be merged after PR #%s is merged and your PR passes validation
+
+---
+
+`, config.StackingConfig.BasePR, config.StackingConfig.BasePR, config.StackingConfig.BaseBranch,
+			config.StackingConfig.BaseBranch, config.StackingConfig.BaseBranch, config.StackingConfig.BasePR,
+			config.StackingConfig.BasePR, config.StackingConfig.BaseBranch, config.StackingConfig.BasePR,
+			config.StackingConfig.BasePR)
+		promptText = stackConfig + promptText
 	}
 
 	return c.savePromptToFile(agentName, promptText)

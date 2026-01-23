@@ -251,6 +251,123 @@ Review comments often contain critical feedback about security, correctness, or 
 
 **When in doubt, don't merge.** Ask the supervisor for guidance.
 
+## Stacked PR Handling
+
+**CRITICAL: Stacked PRs have special merge requirements.** They must be merged in order.
+
+### Detecting Stacked PRs
+
+Stacked PRs are identified by:
+1. The 'stacked' label
+2. Base branch is NOT the main branch (e.g., base is 'work/other-worker' instead of 'main')
+
+### Commands to Check Stacking
+
+```bash
+# Get PR base branch
+gh pr view <pr-number> --json baseRefName --jq '.baseRefName'
+
+# Check if PR is stacked (has stacked label)
+gh pr view <pr-number> --json labels --jq '.labels[].name' | grep -q 'stacked'
+
+# Find PRs stacking on this PR
+gh pr list --base <this-pr-branch> --json number,title
+```
+
+### Merge Requirements for Stacked PRs
+
+Before merging a stacked PR, verify ALL of the following:
+
+1. **Base PR is merged**: The PR this stacks on must be merged first
+   ```bash
+   # Get base PR's branch
+   base_branch=$(gh pr view <pr-number> --json baseRefName --jq '.baseRefName')
+
+   # Check if there's an open PR for that branch
+   open_base_pr=$(gh pr list --head "$base_branch" --state open --json number --jq '.[0].number')
+   if [ -n "$open_base_pr" ]; then
+     echo "Cannot merge: base PR #$open_base_pr is still open"
+     # Skip this PR for now, process it later
+   fi
+   ```
+
+2. **Has 'lgtm' label**: Stacked PRs require explicit human approval
+   ```bash
+   has_lgtm=$(gh pr view <pr-number> --json labels --jq '.labels[].name' | grep -q 'lgtm' && echo "yes" || echo "no")
+   if [ "$has_lgtm" != "yes" ]; then
+     echo "Cannot merge: stacked PR requires 'lgtm' label from human"
+     # Skip this PR until human approves
+   fi
+   ```
+
+3. **Full validation passed**: CI, reviews, roadmap alignment, scope validation (same as normal PRs)
+
+### Merging Stacked PRs
+
+When a stacked PR is ready:
+
+1. **Verify base is merged**:
+   ```bash
+   base_branch=$(gh pr view <pr-number> --json baseRefName --jq '.baseRefName')
+   # If base_branch is not main, check for open PRs on it
+   open_base_pr=$(gh pr list --head "$base_branch" --state open --json number --jq '.[0].number')
+   if [ -n "$open_base_pr" ]; then
+     echo "Cannot merge: base PR #$open_base_pr is still open"
+     exit 1
+   fi
+   ```
+
+2. **Check for lgtm label**:
+   ```bash
+   has_lgtm=$(gh pr view <pr-number> --json labels --jq '.labels[].name' | grep -q 'lgtm' && echo "yes" || echo "no")
+   if [ "$has_lgtm" != "yes" ]; then
+     echo "Cannot merge: stacked PR requires 'lgtm' label from human"
+     exit 1
+   fi
+   ```
+
+3. **Merge normally**:
+   ```bash
+   gh pr merge <pr-number> --squash
+   ```
+
+4. **GitHub handles the rest**: After merging, GitHub automatically updates dependent PRs that were stacking on this one
+
+### When Base PR is Not Yet Merged
+
+If a stacked PR is ready but its base PR is not:
+
+1. **Wait**: Do not merge the stacked PR
+2. **Check base PR**: Process the base PR first (fix CI, address reviews, etc.)
+3. **Communicate**: If the base PR is blocked, notify the supervisor:
+   ```bash
+   multiclaude agent send-message supervisor "Stacked PR #<number> is ready but waiting for base PR #<base> to merge"
+   ```
+
+### Finding Stacked PR Chains
+
+To see all stacked PRs and their dependencies:
+
+```bash
+# List all stacked PRs
+gh pr list --label stacked --json number,title,baseRefName
+
+# For each, check if base branch has an open PR
+for pr in $(gh pr list --label stacked --json number --jq '.[].number'); do
+  base=$(gh pr view $pr --json baseRefName --jq '.baseRefName')
+  echo "PR #$pr base: $base"
+  gh pr list --head "$base" --state open --json number,title
+done
+```
+
+### Why Stacking Matters
+
+Stacked PRs allow breaking large features into smaller, reviewable chunks while maintaining dependencies. The merge-queue must respect these dependencies to avoid breaking changes.
+
+**Never merge out of order.** A stacked PR merged before its base will fail CI or cause conflicts.
+
+**Processing order**: When you see a stacked PR, first ensure its base is merged, then merge the stacked PR. Continue up the stack until all dependent PRs are merged.
+
 ## Asking for Guidance
 
 If you need clarification or guidance from the supervisor:
